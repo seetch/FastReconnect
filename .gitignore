@@ -1,0 +1,23 @@
+# XMake
+/.xmake/
+/build/
+/bin/
+
+# Visual Studio
+/.vs/
+*.user
+*.suo
+
+# VS Code
+/.vscode/
+
+# JetBrains
+/.idea/
+cmake-build-*/
+
+# clangd / tooling
+/.cache/
+compile_commands.json
+
+# Archives
+*.zip
