@@ -1,18 +1,20 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
-#include <memory>
 #include <optional>
 #include <string>
 
 #include "mod/Config.h"
 
-#include "ll/api/data/CancellableCallback.h"
-
 #include "mc/network/GameConnectionInfo.h"
 #include "mc/network/connection/DisconnectFailReason.h"
+#include "mc/network/connection/DisconnectionStage.h"
 
-class ClientInstance;
+class IClientInstance;
+class DisconnectScreenController;
+class ScreenController;
+struct ScreenEvent;
 
 namespace fast_reconnect {
 
@@ -28,7 +30,24 @@ public:
 
     void onJoinedLevel();
 
-    void onDisconnect(::ClientInstance& client, std::optional<::Connection::DisconnectFailReason> reason);
+    void onDisconnect(
+        ::IClientInstance&                                client,
+        std::optional<::Connection::DisconnectFailReason> reason,
+        std::optional<::Connection::DisconnectionStage>   stage,
+        std::string const&                                serverMessage
+    );
+
+    void onDisconnectScreenOpened(::DisconnectScreenController& controller);
+
+    void onDisconnectScreenClosed(::DisconnectScreenController& controller);
+
+    void onClientUpdate(::IClientInstance& client);
+
+    void onScreenButtonEvent(::ScreenController& controller, ::ScreenEvent& event);
+
+    void forceReconnect();
+
+    void markResourcePackDetected();
 
     void reset();
 
@@ -36,17 +55,25 @@ private:
     ReconnectManager() = default;
 
     [[nodiscard]] bool shouldReconnect(std::optional<::Connection::DisconnectFailReason> reason) const;
+    [[nodiscard]] bool isReconnectableConnection() const;
 
-    void scheduleAttempt(::ClientInstance& client);
-    void tryConnect(::ClientInstance& client, std::size_t readinessChecksLeft);
+    void scheduleAttempt();
+    void tryConnect(std::size_t readinessChecksLeft);
 
-    Config                                         mConfig{};
-    std::optional<::Social::GameConnectionInfo>    mLastConnection;
-    std::string                                    mServerName;
-    bool                                           mLastJoinWasLocal   = true;
-    bool                                           mHandlingDisconnect = false;
-    int                                            mAttempts           = 0;
-    std::shared_ptr<ll::data::CancellableCallback> mPendingTask;
+    Config                                               mConfig{};
+    ::IClientInstance*                                   mClient           = nullptr;
+    ::DisconnectScreenController*                        mDisconnectScreen = nullptr;
+    ::DisconnectScreenController*                        mBoundScreen      = nullptr;
+    std::optional<::Social::GameConnectionInfo>          mLastConnection;
+    std::string                                          mServerName;
+    bool                                                 mHandlingDisconnect = false;
+    bool                                                 mReconnectActive    = false;
+    bool                                                 mLeaveRequested     = false;
+    bool                                                 mRpDetected         = false;
+    bool                                                 mManualRequest      = false;
+    int                                                  mAttempts           = 0;
+    std::size_t                                          mChecksLeft         = 0;
+    std::optional<std::chrono::steady_clock::time_point> mNextActionAt;
 };
 
 } // namespace fast_reconnect

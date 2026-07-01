@@ -19,7 +19,7 @@ end
 
 target("fast-reconnect")
     add_rules("@levibuildscript/linkrule")
-    add_rules("@levibuildscript/modpacker", {modVersion = "0.1.0"})
+    add_rules("@levibuildscript/modpacker", {modVersion = "0.2.0"})
     if is_plat("windows") then
         add_defines("NOMINMAX", "UNICODE")
         set_exceptions("none") -- To avoid conflicts with /EHa.

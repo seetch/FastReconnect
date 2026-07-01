@@ -1,0 +1,67 @@
+{
+  "namespace": "disconnect",
+
+  "fast_reconnect_button@disconnect.menu_button_template": {
+    "$pressed_button_name": "button.fast_reconnect_now",
+    "$button_text": "fastReconnect.button",
+    "property_bag": {
+      "#fastreconnect": true
+    }
+  },
+
+  "button_panel": {
+    "type": "stack_panel",
+    "orientation": "vertical",
+    "anchor_from": "bottom_middle",
+    "anchor_to": "bottom_middle",
+    "offset": [ 0, "-20%" ],
+    "controls": [
+      {
+        "open_uri_button_panel": {
+          "type": "panel",
+          "size": [ "100%", 30 ],
+          "visible": false,
+          "bindings": [
+            {
+              "binding_name": "#open_uri_button_visible",
+              "binding_name_override": "#visible"
+            }
+          ],
+          "controls": [
+            { "open_uri_button@disconnect.open_uri_button": {} }
+          ]
+        }
+      },
+      {
+        "fast_reconnect_marker": {
+          "type": "panel",
+          "size": [ 0, 0 ],
+          "bindings": [
+            {
+              "binding_name": "#fastreconnect_marker",
+              "binding_name_override": "#visible"
+            }
+          ]
+        }
+      },
+      {
+        "fast_reconnect_button_panel": {
+          "type": "panel",
+          "size": [ "100%", 31 ],
+          "controls": [
+            { "fast_reconnect_button@disconnect.fast_reconnect_button": {} }
+          ]
+        }
+      },
+      {
+        "open_button_panel": {
+          "type": "panel",
+          "size": [ "100%", 26 ],
+          "controls": [
+            { "ok_button@disconnect.ok_button": {} }
+          ]
+        }
+      }
+    ]
+  }
+}

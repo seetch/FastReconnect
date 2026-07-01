@@ -1,0 +1,17 @@
+{
+    "format_version": 2,
+    "header": {
+        "name": "FastReconnect UI",
+        "description": "Adds a Reconnect button to the disconnect screen. Requires the FastReconnect mod.",
+        "uuid": "65c689cd-f09b-4088-b089-0cccaed33999",
+        "version": [0, 2, 0],
+        "min_engine_version": [1, 21, 0]
+    },
+    "modules": [
+        {
+            "type": "resources",
+            "uuid": "04b3ef53-90a4-41f9-9a7c-9394004f67cf",
+            "version": [0, 2, 0]
+        }
+    ]
+}

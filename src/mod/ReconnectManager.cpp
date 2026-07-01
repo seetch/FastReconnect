@@ -1,16 +1,18 @@
 #include "mod/ReconnectManager.h"
 
-#include <chrono>
-#include <utility>
-
 #include "mod/FastReconnectMod.h"
-
-#include "ll/api/thread/ClientThreadExecutor.h"
 
 #include "magic_enum/magic_enum.hpp"
 
-#include "mc/client/events/PlayerJoinWorldContext.h"
-#include "mc/client/game/ClientInstance.h"
+#include "mc/client/game/IClientInstance.h"
+#include "mc/client/gui/screens/ScreenController.h"
+#include "mc/client/gui/screens/ScreenEvent.h"
+#include "mc/client/gui/screens/ScreenEventType.h"
+#include "mc/client/gui/controls/UIPropertyBag.h"
+#include "mc/client/gui/screens/controllers/DisconnectScreenController.h"
+#include "mc/deps/core/string/StringHash.h"
+#include "mc/deps/input/enums/ButtonState.h"
+#include "mc/network/ConnectionType.h"
 
 namespace fast_reconnect {
 
@@ -18,7 +20,7 @@ namespace {
 
 ll::io::Logger& logger() { return FastReconnectMod::getInstance().getSelf().getLogger(); }
 
-constexpr std::size_t kReadinessChecks = 20;
+constexpr std::size_t kReadinessChecks = 40;
 
 } // namespace
 
@@ -32,30 +34,35 @@ void ReconnectManager::setConfig(Config const& config) { mConfig = config; }
 void ReconnectManager::onConnectionInfoSet(::Social::GameConnectionInfo const& info) { mLastConnection = info; }
 
 void ReconnectManager::onStartJoin(bool isJoiningLocalServer, std::string const& serverName) {
-    mLastJoinWasLocal = isJoiningLocalServer;
-    if (!isJoiningLocalServer) {
+    if (!isJoiningLocalServer && !serverName.empty()) {
         mServerName = serverName;
     }
     mHandlingDisconnect = false;
+    mReconnectActive    = false;
+    mLeaveRequested     = false;
 }
 
 void ReconnectManager::onJoinedLevel() { mAttempts = 0; }
 
 void ReconnectManager::onDisconnect(
-    ::ClientInstance&                                 client,
-    std::optional<::Connection::DisconnectFailReason> reason
+    ::IClientInstance&                                client,
+    std::optional<::Connection::DisconnectFailReason> reason,
+    std::optional<::Connection::DisconnectionStage>   stage,
+    std::string const&                                serverMessage
 ) {
+    mClient = &client;
     if (!mConfig.enabled || mHandlingDisconnect) {
         return;
     }
-    if (mLastJoinWasLocal || !mLastConnection) {
+    if (!mLastConnection) {
+        mLastConnection = client.getGameConnectionInfo();
+    }
+    if (!isReconnectableConnection()) {
+        logger().info("Not reconnecting: no reconnectable server connection");
         return;
     }
     if (!shouldReconnect(reason)) {
-        logger().info(
-            "Not reconnecting: reason '{}' is not recoverable",
-            reason ? magic_enum::enum_name(*reason) : "unknown"
-        );
+        logger().info("Not reconnecting: reason '{}' is not recoverable", magic_enum::enum_name(*reason));
         return;
     }
     if (mAttempts >= mConfig.maxAttempts) {
@@ -63,27 +70,115 @@ void ReconnectManager::onDisconnect(
         return;
     }
     mHandlingDisconnect = true;
+    mReconnectActive    = true;
+    mLeaveRequested     = false;
+    mManualRequest      = false;
     ++mAttempts;
     logger().info(
-        "Disconnected from '{}' (reason: {}), reconnecting in {:.1f}s (attempt {}/{})",
+        "Disconnected from '{}' (reason: {}, message: '{}'), reconnecting in {:.1f}s (attempt {}/{})",
         mServerName,
         reason ? magic_enum::enum_name(*reason) : "unknown",
+        serverMessage,
         mConfig.delaySeconds,
         mAttempts,
         mConfig.maxAttempts
     );
-    scheduleAttempt(client);
+    (void)stage;
+    scheduleAttempt();
+}
+
+void ReconnectManager::onDisconnectScreenOpened(::DisconnectScreenController& controller) {
+    mDisconnectScreen = &controller;
+    if (mBoundScreen != &controller) {
+        mBoundScreen = &controller;
+        static_cast<::ScreenController&>(controller).bindBool(
+            ::StringHash("#fastreconnect_marker"),
+            [] {
+                ReconnectManager::getInstance().markResourcePackDetected();
+                return false;
+            },
+            [] { return true; }
+        );
+    }
+}
+
+void ReconnectManager::onDisconnectScreenClosed(::DisconnectScreenController& controller) {
+    if (mDisconnectScreen == &controller) {
+        mDisconnectScreen = nullptr;
+    }
+    if (mBoundScreen == &controller) {
+        mBoundScreen = nullptr;
+    }
+}
+
+void ReconnectManager::onClientUpdate(::IClientInstance& client) {
+    if (!mNextActionAt) {
+        return;
+    }
+    mClient = &client;
+    if (std::chrono::steady_clock::now() < *mNextActionAt) {
+        return;
+    }
+    mNextActionAt.reset();
+    if (mRpDetected && !mManualRequest) {
+        logger().info("Auto reconnect suppressed, waiting for the Reconnect button");
+        mReconnectActive    = false;
+        mHandlingDisconnect = false;
+        return;
+    }
+    tryConnect(mChecksLeft);
+}
+
+void ReconnectManager::onScreenButtonEvent(::ScreenController& controller, ::ScreenEvent& event) {
+    if (mDisconnectScreen == nullptr || static_cast<::ScreenController*>(mDisconnectScreen) != &controller) {
+        return;
+    }
+    if (event.type != ::ScreenEventType::ButtonEvent) {
+        return;
+    }
+    auto const& button = *event.data->button;
+    if (static_cast<::ButtonState>(button.state) != ::ButtonState::Up) {
+        return;
+    }
+    ::UIPropertyBag* properties = button.properties;
+    if (properties == nullptr || !properties->has("#fastreconnect")) {
+        return;
+    }
+    logger().info("Reconnect button pressed");
+    forceReconnect();
+}
+
+void ReconnectManager::forceReconnect() {
+    if (!mConfig.enabled || mClient == nullptr || !isReconnectableConnection()) {
+        return;
+    }
+    mReconnectActive    = true;
+    mHandlingDisconnect = true;
+    mLeaveRequested     = false;
+    mManualRequest      = true;
+    mChecksLeft         = kReadinessChecks;
+    mNextActionAt       = std::chrono::steady_clock::now();
+}
+
+void ReconnectManager::markResourcePackDetected() {
+    if (!mRpDetected) {
+        mRpDetected = true;
+        logger().info("Resource pack detected, auto reconnect disabled in favor of the button");
+    }
 }
 
 void ReconnectManager::reset() {
-    if (mPendingTask) {
-        mPendingTask->cancel();
-        mPendingTask.reset();
-    }
+    mNextActionAt.reset();
+    mClient           = nullptr;
+    mDisconnectScreen = nullptr;
+    mBoundScreen      = nullptr;
     mLastConnection.reset();
     mServerName.clear();
-    mLastJoinWasLocal   = true;
     mHandlingDisconnect = false;
+    mReconnectActive    = false;
+    mLeaveRequested     = false;
+    mRpDetected         = false;
+    mManualRequest      = false;
     mAttempts           = 0;
 }
 
@@ -115,35 +210,67 @@ bool ReconnectManager::shouldReconnect(std::optional<::Connection::DisconnectFai
     }
 }
 
-void ReconnectManager::scheduleAttempt(::ClientInstance& client) {
-    auto const delay = std::chrono::duration_cast<ll::coro::Duration>(
-        std::chrono::duration<double>(mConfig.delaySeconds)
-    );
-    mPendingTask = ll::thread::ClientThreadExecutor::getDefault().executeAfter(
-        [this, &client] { tryConnect(client, kReadinessChecks); },
-        delay
-    );
+bool ReconnectManager::isReconnectableConnection() const {
+    if (!mLastConnection) {
+        return false;
+    }
+    switch (static_cast<::Social::ConnectionType>(mLastConnection->mType)) {
+    case ::Social::ConnectionType::IPv4:
+    case ::Social::ConnectionType::IPv6:
+    case ::Social::ConnectionType::UnknownIP:
+        return true;
+    default:
+        return false;
+    }
 }
 
-void ReconnectManager::tryConnect(::ClientInstance& client, std::size_t readinessChecksLeft) {
-    if (!mConfig.enabled || !mLastConnection) {
+void ReconnectManager::scheduleAttempt() {
+    mChecksLeft   = kReadinessChecks;
+    mNextActionAt = std::chrono::steady_clock::now()
+                  + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(mConfig.delaySeconds)
+                  );
+}
+
+void ReconnectManager::tryConnect(std::size_t readinessChecksLeft) {
+    if (!mConfig.enabled || !mReconnectActive || !mClient || !mLastConnection) {
         return;
     }
-    if (!client.isReadyToReconnect()) {
+    auto const waitAndRetry = [this, readinessChecksLeft] {
         if (readinessChecksLeft == 0) {
-            logger().warn("Client never became ready to reconnect, giving up");
+            logger().warn("Client never became ready to reconnect, giving up (screen: {})", mClient->getScreenName());
             mHandlingDisconnect = false;
+            mReconnectActive    = false;
             return;
         }
-        mPendingTask = ll::thread::ClientThreadExecutor::getDefault().executeAfter(
-            [this, &client, readinessChecksLeft] { tryConnect(client, readinessChecksLeft - 1); },
-            std::chrono::milliseconds(500)
-        );
+        mChecksLeft   = readinessChecksLeft - 1;
+        mNextActionAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    };
+
+    auto const screen = mClient->getScreenName();
+    if (screen.find("disconnect") != std::string::npos) {
+        if (!mLeaveRequested) {
+            mLeaveRequested = true;
+            logger().info("Dismissing disconnect screen");
+            if (mDisconnectScreen != nullptr) {
+                mDisconnectScreen->_processLeaveScreen();
+            } else {
+                mClient->setLeaveGameInProgressAsReadyToContinue();
+            }
+        }
+        waitAndRetry();
         return;
     }
-    logger().info("Reconnecting to '{}' ({})", mServerName, mLastConnection->mHostIpAddress.get());
-    ::PlayerJoinWorldContext context{std::string{}, false, false, false, true};
-    client.startExternalNetworkWorld(*mLastConnection, mServerName, std::move(context));
+    if (!mClient->isLeaveGameDone() || !mClient->isReadyToReconnect()) {
+        waitAndRetry();
+        return;
+    }
+    mReconnectActive    = false;
+    mHandlingDisconnect = false;
+    auto const& host = static_cast<std::string const&>(mLastConnection->mHostIpAddress);
+    int const   port = mLastConnection->mPort;
+    logger().info("Reconnecting to '{}' ({}:{})", mServerName.empty() ? host : mServerName, host, port);
+    mClient->connectToThirdPartyServer(host, port);
 }
 
 } // namespace fast_reconnect
